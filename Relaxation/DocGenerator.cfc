@@ -29,13 +29,13 @@ component
 	**/
 	package struct function getFunctionMeta( required any _function ) {
 		var meta = getMetaData(arguments._function);
+
 		param name="meta.access" default="public";
 		param name="meta.hint" default="";
 		param name="meta.output" default="true";
 		param name="meta.returntype" default="any";
 		for ( var arg in meta.parameters ) {
 			arg.type = structKeyExists(arg, "type") ? arg.type : 'any';
-			arg.Required = structKeyExists(arg, "required") ? arg.Required : 'false';
 		}
 		return meta;
 	}
@@ -51,15 +51,16 @@ component
 		for ( var verb in ListToArray('GET,PUT,POST,DELETE') ) {
 			if ( StructKeyExists(arguments.Resource, verb) ) {
 				var verbStruct = arguments.Resource[verb];
+				var bean = Relaxation.getBeanFactory().getBean(verbStruct.bean);
+				var method = bean[verbStruct.method];
 				var defaults = StructKeyExists(verbStruct, 'DefaultArguments') ? verbStruct.DefaultArguments : {};
-				var fMeta = {"Verb" = verb, "DefaultArguments" = defaults};
-				try {
-					var bean = Relaxation.getBeanFactory().getBean(verbStruct.bean);
-					var method = bean[verbStruct.method];
-					StructAppend(fMeta, getFunctionMeta(method));
-				} catch ( any e ) {
-					StructAppend(fMeta, {"error": e.message});
-				}
+				
+				// added apigee meta items
+				var apigeeName = StructKeyExists(verbStruct, 'apigeeName') ? verbStruct.apigeeName : '';					
+				var apigeeDoc = StructKeyExists(verbStruct, 'apigeeDoc') ? verbStruct.apigeeDoc : '';
+				
+				var fMeta = {"Verb" = verb, "DefaultArguments" = defaults, "apigeeName" = apigeeName, "apigeeDoc" = apigeeDoc};
+				StructAppend(fMeta, getFunctionMeta(method));
 				ArrayAppend(meta.Verbs, fMeta);
 			}
 		}

@@ -10,6 +10,7 @@ component
 	property name="DocGenerator" type="component";
 	property name="AuthorizationMethod" type="any";
 	property name="OnErrorMethod" type="any";
+	property name="FormatResponseMethod" type="any"; // added property
 	
 	variables.Config = {};
 	
@@ -17,7 +18,7 @@ component
 	* @hint "I initialize the object and get the routing all setup."
 	* @output false
 	**/
-	public component function init( required any Config, component BeanFactory, any AuthorizationMethod, any OnErrorMethod ) {
+	public component function init( required any Config, component BeanFactory, any AuthorizationMethod, any OnErrorMethod, any FormatResponseMethod ) {
 		/* Set object to handle CFML stuff. */
 		setcfmlFunctions( new cfmlFunctions() );
 		/* Set object to handle Doc Gen stuff. */
@@ -33,6 +34,11 @@ component
 		if ( structKeyExists(arguments,'OnErrorMethod') ) {
 			setOnErrorMethod( arguments.OnErrorMethod );
 		}
+		// added FormatResponseMethod (simplifies proper REST response format)
+		if ( structKeyExists(arguments,'FormatResponseMethod') ) {
+			setFormatResponseMethod( arguments.FormatResponseMethod );
+		}
+
 		/* Deal with different types of configs passed in. */
 		arguments.Config = translateConfig( arguments.Config );
 		/* Store raw config. */
@@ -56,38 +62,60 @@ component
 	* @output true
 	**/
 	public struct function handleRequest( string Path = CGI.PATH_INFO ) {
+
 		/* Handle requests to the root of the API. */
-		if ( ListLast(arguments.Path,"/") EQ 'index.cfm' OR reReplace(arguments.Path, "/$", "") EQ "" ) {
+		if ( ListLast(arguments.Path,"/") EQ 'index.cfm' OR reReplace(arguments.Path, "/$", "") EQ "" OR arguments.path EQ "/$" ) {
+
 			/* No resource path specified. Show available resources. */
 			getDocGenerator().renderDocs();
 		}
 		/* Process the request. */
 		var result = processRequest( ArgumentCollection = arguments );
 		/* Deal with rendering the result. */
+			
 		if ( result.Success ) {
 			/* Happiness, the request was successful! */
+
+			// added deserializeJSON (processRequest() serializes the response earlier)
+			var response = deserializeJSON(result.output);	
+
+			// add AllowedVerbs to the response header
 			setResponseHeader('Allow', result.AllowedVerbs);
-			if ( len(trim(result.CacheHeaderSeconds)) ) {
-				/* Add cache headers. */
-				var httpnow = DateConvert('local2Utc',now());
-				var httpexpires = DateAdd('s',val(result.CacheHeaderSeconds),httpnow);
-				setResponseHeader('Cache-Control', "max-age=" & val(result.CacheHeaderSeconds));
-				setResponseHeader('Date', formatHTTPDate(httpnow));
-				setResponseHeader('Expires', formatHTTPDate(httpexpires));
+
+			/* added appropriate status code responses (if not already provided). */
+			if (len(response.statusText) EQ 0) {
+
+				switch(response.status) {
+					case 200:	response.statusText = 'OK'; break;
+					case 201:	response.statusText = 'Created'; break;
+					case 202:	response.statusText = 'Accepted'; break;
+					case 203:	response.statusText = 'Non-Authoritative Information (since HTTP/1.1)'; break;
+					case 204:	response.statusText = 'No Content'; break;
+					case 205:	response.statusText = 'Reset Content'; break;
+
+					default:	response.statusText = 'Unknown status text'; break;
+				}
+
 			}
-			if ( len(trim(result.Output)) > 0 ) {
-				/* Tell the client we are sending JSON. */
-				setResponseContentType('application/json');
-				/* Give'em what they asked for. */
-				writeOutput( result.Output );
-			} else {
-				/* No output means a 204 */
-				setResponseStatus(204,'No Content');
+
+			// if output has no content reset the http status
+			if (len(trim(result.output)) <= 0) {
+				response.status = 204;
+				response.statusText = 'No Content';
 			}
+
 		} else {
 			/* Provide appropriate error responses. */
 			switch(result.Error) {
-				case "NotAuthorized": {
+				case "unAuthorized": {
+					var response = {
+						'status' = 401,
+						'statusText' = 'UnAuthorized',
+						'responseText' = result.ErrorMessage
+					};
+					break;
+				}
+				case "notAuthorized": {
 					var response = {
 						'status' = 403,
 						'statusText' = 'Forbidden',
@@ -95,7 +123,7 @@ component
 					};
 					break;
 				}
-				case "ResourceNotFound": {
+				case "resourceNotFound": {
 					var response = {
 						'status' = 404,
 						'statusText' = 'Not Found',
@@ -103,11 +131,19 @@ component
 					};
 					break;
 				}
-				case "VerbNotFound": {
+				case "verbNotFound": {
 					setResponseHeader('Allow', result.AllowedVerbs);
 					var response = {
 						'status' = 405,
 						'statusText' = 'Method Not Allowed',
+						'responseText' = result.ErrorMessage
+					};
+					break;
+				}
+				case "rateLimit": {
+					var response = {
+						'status' = 429,
+						'statusText' = 'Too Many Requests',
 						'responseText' = result.ErrorMessage
 					};
 					break;
@@ -121,12 +157,15 @@ component
 					break;
 				}
 			}
-			/* Tell the client we are sending JSON. */
-			setResponseContentType('application/json');
-			/* Output the response */
-			setResponseStatus(response.status, response.statusText);
-			writeOutput( SerializeJSON(response) );
+
 		}
+
+		/* Tell the client we are sending JSON. */
+		setResponseContentType('application/json');
+		/* Output the response */
+		setResponseStatus(response.status, response.statusText);
+		writeOutput( SerializeJSON(response) );
+
 		result["Rendered"] = true;
 		return result;
 	}
@@ -152,15 +191,19 @@ component
 		if ( isNull(arguments.RequestBody) && isJSON(trim(ToString(GetHttpRequestData().Content))) ) {
 			arguments.RequestBody = trim(ToString(GetHttpRequestData().Content));
 		}
+
 		var result = {
 			"Success" = true
 			,"Output" = ""
 			,"Error" = ""
 			,"ErrorMessage" = ""
 			,"AllowedVerbs" = ""
-			,"CacheHeaderSeconds" = ""
+			,"X-RateLimit-Limit" = ""		// added X-RateLimit-OPTION for Rate Limiting
+			,"X-RateLimit-Reset" = ""
+			,"X-RateLimit-Remaining" = ""
 		};
 		var resource = findResourceConfig( argumentCollection = arguments );
+
 		if ( !resource.Located ) {
 			/* We could not locate the configuration for handling this type of request. */
 			result.Success = false;
@@ -179,20 +222,36 @@ component
 		}
 		if ( !isNull(getAuthorizationMethod()) ) {
 			var authorize = getAuthorizationMethod();
+
+			param name="resource.role" default="admin"; // added default admin ROLE for all methods
 			var authArg = {
 				"Bean" = resource.Bean,
 				"Method" = resource.Method,
 				"Path" = resource.Path,
 				"Pattern" = resource.Pattern,
-				"Verb" = resource.Verb
+				"Verb" = resource.Verb,
+				"URL" = resource.URLScope,  // added URLScope to resources (used in authorization)
+				"Role" = resource.role 		// added role to resources (used in authorization)
 			};
-			if ( !authorize(authArg) ) {
-				result.Success = false;
-				result.Error = "NotAuthorized";
+
+   			// added custom error options from auth method (instead of just true/false) 
+   			authResult = authorize(authArg);
+
+   			// added X-RateLimit(Limit|Remaining|Reset) information to response header
+			setResponseHeader("X-RateLimit-Limit", authResult["X-RateLimit-Limit"] );
+			setResponseHeader("X-RateLimit-Remaining", authResult["X-RateLimit-Remaining"] );
+			setResponseHeader("X-RateLimit-Reset", authResult["X-RateLimit-Reset"] );
+
+			// added custom error message from authResult
+   			if (!authResult.success) {
+   				result.success = false;
+   				result.error = authResult.error;
+   				result.errorMessage = authResult.errorMessage;   				
+
 				return result;
-			}
+   			}
+
 		}
-		result.CacheHeaderSeconds = StructKeyExists(resource, "CacheHeaderSeconds") ? resource.CacheHeaderSeconds : "";
 		var bean = getMappedBean(resource.Bean);
 		/* Gather the arguments needed to call the method. */
 		var args = gatherRequestArguments( argumentCollection = arguments, ResourceMatch = resource);
@@ -209,7 +268,17 @@ component
 				rethrow;
 			}
 		}
+
+		// added FormatResponseMethod to allow external formatting of response data (e.g. takes methodResult and formats uniform response)
+		if ( !isNull(getFormatResponseMethod()) AND isDefined("methodResult")  ) {
+			var format = getFormatResponseMethod();
+			// added resource to methodResult for use in formating (unit testing/debugging)
+			methodResult.resource = resource;
+			methodResult = format(methodResult); // methodResult is a structure (RESPONSE: "json values")
+		}
+
 		result.Output = isDefined("methodResult") ? SerializeJSON(methodResult) : "";
+
 		return result;
 	}
 	
@@ -278,7 +347,7 @@ component
 	}
 	
 	/**
-	* @hint "Give an resource path and verb, I will return the config object. This will contain everything that was in the (GET,PUT,POST,etc) key in the config."
+	* @hint "Give an resource path and verb, I will return the config object."
 	* @output false
 	**/
 	private struct function findResourceConfig( required string Path, required string Verb ) {
@@ -292,6 +361,7 @@ component
 			,"Pattern" = ""
 			,"Regex" = ""
 			,"Verb" = arguments.Verb
+			,"URLScope" = arguments.URLScope
 		};
 		for ( var resource in variables.Config.Resources ) {
 			if ( RefindNoCase(resource.Regex,arguments.Path) ) {
@@ -319,13 +389,6 @@ component
 			StructAppend(result, match[arguments.Verb]);
 		}
 		return result;
-	}
-	
-	/**
-	* @hint "I will return a date in the correct format for http headers."
-	**/
-	private string function formatHTTPDate(required date Date) {
-		return DateFormat(arguments.Date,"ddd, dd mmm yyyy") & TimeFormat(arguments.Date,"HH:nn:ss") & ' GMT';
 	}
 	
 	/**

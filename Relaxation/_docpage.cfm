@@ -41,29 +41,25 @@
 				<cfloop array="#resource.verbs#" index="local.method">
 					<div>
 						<p><strong>#method.Verb#</strong></p>
-						<cfif StructKeyExists(method, "error")>
-							<p><strong>ERROR:</strong> #method.error#</p>
-						<cfelse>
-							<p>"#method.Hint#"</p>
-							<p><strong>Parameters:</strong></p>
-							<ul>
-								<cfloop array="#method.Parameters#" index="local.arg">
-									<li>
-										#arg.Required?'required':''#
-										#arg.Type#
-										#arg.Name#
-										#isDefined("arg.Default")?'(default: '&arg.Default&')':''#
-									</li>
-								</cfloop>
-								<cfif ArrayLen(method.Parameters) EQ 0>
-									<li>(none)</li>
-								</cfif>
-							</ul>
-							<p>
-								<strong>Response:</strong>
-								#method.returntype#
-							</p>
-						</cfif>
+						<p>"#method.Hint#"</p>
+						<p><strong>Parameters:</strong></p>
+						<ul>
+							<cfloop array="#method.Parameters#" index="local.arg">
+								<li>
+									#arg.Required?'required':''#
+									#arg.Type#
+									#arg.Name#
+									#isDefined("arg.Default")?'(default: '&arg.Default&')':''#
+								</li>
+							</cfloop>
+							<cfif ArrayLen(method.Parameters) EQ 0>
+								<li>(none)</li>
+							</cfif>
+						</ul>
+						<p>
+							<strong>Response:</strong>
+							#method.returntype#
+						</p>
 					</div>
 				</cfloop>
 			</div>

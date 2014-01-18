@@ -9,11 +9,21 @@
 		<cfargument name="method" type="string" required="true" />
 		<cfargument name="args" type="struct" required="true" default="#{}#" />
 		
-		<cfinvoke component="#arguments.object#"
-				  method="#arguments.method#"
-				  argumentcollection="#arguments.args#"
-				  returnvariable="local.result" />
-		
+		<!--- added try/catch tags to manage server messages --->
+		<cftry>		
+			<cfinvoke component="#arguments.object#"
+					  method="#arguments.method#"
+					  argumentcollection="#arguments.args#"
+					  returnvariable="local.result" />
+
+		<cfcatch type="any">
+			<cfset local.result.executiontime = 0>
+			<cfset local.result.rs1 = "">
+			<cfset local.result.status = 400>
+			<cfset local.result.statusText = cfcatch.message>
+
+		</cfcatch>
+		</cftry>
 		<cfreturn IsNull(local.result) ? JavaCast("null", "") : local.result />
 	</cffunction>
 	
